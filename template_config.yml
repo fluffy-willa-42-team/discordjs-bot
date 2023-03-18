@@ -1,0 +1,10 @@
+discordBot:
+    TOKEN:          ""
+    APPLICATION_ID: ""
+    GUILD_ID:       ""
+
+# PVEAPIToken=<token id>=<secret>
+proxmox:
+    url:     "https://"
+    tokenID: ""
+    secret:  ""
