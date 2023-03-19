@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "fs";
 import {parse} from 'yaml';
 import { join } from "path";
 import axios from "axios";
-import {ActionRowBuilder, BaseInteraction, ButtonBuilder, ButtonStyle, Client, Collection, CommandInteraction, Component, Events, GatewayIntentBits, Message, StringSelectMenuBuilder} from "discord.js"
+import {ActionRowBuilder, APISelectMenuOption, BaseInteraction, ButtonBuilder, ButtonStyle, Client, Collection, CommandInteraction, Component, Events, GatewayIntentBits, Interaction, Message, MessageComponentInteraction, RestOrArray, StringSelectMenuBuilder, StringSelectMenuInteraction, StringSelectMenuOptionBuilder} from "discord.js"
 
 export class DevBot {
 
@@ -119,6 +119,31 @@ export class DevBot {
 		return;
 	}
 
+	async manageVmProx (node: string, vmid: string, status: string | "start" | "stop" | "shutdown" | "reboot") : Promise<any> {
+		try {
+			const options = {
+			  method: 'POST',
+			  url: `${this.config.proxmox.url}/api2/json/nodes/${node}/qemu/${vmid}/status/${status}`,
+			  headers: {
+				Authorization: `PVEAPIToken=${this.config.proxmox.tokenID}=${this.config.proxmox.secret}`
+			  }
+			};
+			
+			return await axios.request(options)
+			.then((response) => {
+				return 'OK';
+			})
+			.catch(function (error) {
+				console.error("Connection faild to proxmox api", error.response.status, error.response.statusText);
+				return error;
+			});
+		} catch (error) {
+			console.log(error);
+			return error;
+		}
+		return;
+	}
+
 	private discordClient: any;
 
 	private async connectDiscord () : Promise<void> {
@@ -170,13 +195,14 @@ export class DevBot {
 			}
 		})
 
-		this.discordClient.on(Events.InteractionCreate,async (interaction:any) : Promise<any> => {
+		this.discordClient.on(Events.InteractionCreate,async (interaction:Interaction) : Promise<any> => {
 			if (!interaction.isButton()) return;
 			const id : string = interaction.customId;
 			if (id === "abort") {
 				interaction.update({ content: 'Aborted', components: [] });
 				return;
 			}
+
 			if (id.startsWith("nodeWOL:")) {
 				const nodeId = id.substring("nodeWOL:".length);
 				const errCheck = await this.wolProxNode(nodeId);
@@ -186,11 +212,31 @@ export class DevBot {
 					interaction.update({ content: `Faild to WOL ${nodeId}, ${errCheck}`, components: [] });
 				return;
 			}
-			interaction.update({ content: 'Error', components: [] });
+
+			if (
+				id.startsWith("start:")		||
+				id.startsWith("stop:")		||
+				id.startsWith("shutdown:")	||
+				id.startsWith("reboot:")
+				) {
+				const values : string[] = id.split(':');
+				if (values.length != 3)
+				{
+					interaction.update({ content: `Error undefind VM id`, components: []});
+					return;
+				}
+				const status = values[0]
+				const vmNode = values[1];
+				const vmId = values[2];
+				await this.manageVmProx(vmNode, vmId, status)
+				interaction.update({ content: `Send ${status} to VM`, components: []});
+				return
+			}
+			interaction.update({ content: 'Error button request dont exist', components: [] });
 			return;
 		})
 
-		this.discordClient.on(Events.InteractionCreate, async (interaction: any) => {
+		this.discordClient.on(Events.InteractionCreate, async (interaction: Interaction) => {
 			if (!interaction.isStringSelectMenu()) return;
 			
 			if (interaction.customId === "selectNodeToManage") {
@@ -210,14 +256,14 @@ export class DevBot {
 
 				if (selectedNode.status === "offline")
 				{
-					const startButton = new ActionRowBuilder()
+					const startButton : ActionRowBuilder<any> = new ActionRowBuilder()
 					.addComponents(
 						new ButtonBuilder()
 							.setCustomId(`nodeWOL:${selectedNode.node}`)
 							.setLabel(`Try WOL ${selectedNode.node}`)
 							.setStyle(ButtonStyle.Primary)
 					)
-					const stopButton = new ActionRowBuilder()
+					const stopButton : ActionRowBuilder<any> = new ActionRowBuilder()
 					.addComponents(
 						new ButtonBuilder()
 							.setCustomId('abort')
@@ -228,23 +274,52 @@ export class DevBot {
 				}
 
 				const nodes : Array<any> = await bot.getProxQemu(selectedNode.node);
-				const options = nodes.map((vm) => {
-					return {label: vm.name, value: new Number(vm.vmid).toString()}
+				const options  = nodes.map((vm) : StringSelectMenuOptionBuilder => {
+					return new StringSelectMenuOptionBuilder({label: vm.name, value : `${vm.vmid}:${vm.name}:${selectedNode.node}` })
 				})
 		
 				const row: ActionRowBuilder<any> = new ActionRowBuilder()
 				.addComponents(
 					new StringSelectMenuBuilder()
 						.setCustomId('selectQemuToManage')
-						.setPlaceholder('Nothing selected')
+						.setPlaceholder('Select the VM')
 						.addOptions(options),
 				);
 				await interaction.update({ content: 'Select the VM to manage', components: [row] });
 				return;
 			}
 			if (interaction.customId === "selectQemuToManage") {
-				const selected = interaction.values[0];
-				await interaction.update({ content: `//TODO show ${selected} status and option to start, stop and reboot`, components: [] });
+				const values : string = interaction.values[0];
+				const vmValues : string[] = values.split(':');
+				if (vmValues.length != 3) {
+					await interaction.update({ content: `Error missing value param`, components: [] });
+					return;
+				}
+				const vmId = vmValues[0];
+				const vmName = vmValues[1]
+				const vmNode = vmValues[2];
+				const startButton : ActionRowBuilder<any> = new ActionRowBuilder()
+				.addComponents(
+					new ButtonBuilder()
+						.setCustomId(`start:${vmNode}:${vmId}`)
+						.setLabel(`Try to start ${vmName}`)
+						.setStyle(ButtonStyle.Primary)
+				)
+				const rebootButton : ActionRowBuilder<any> = new ActionRowBuilder()
+				.addComponents(
+					new ButtonBuilder()
+						.setCustomId(`reboot:${vmNode}:${vmId}`)
+						.setLabel(`Try to reboot ${vmName}`)
+						.setStyle(ButtonStyle.Secondary)
+				);
+				const shutdownButton : ActionRowBuilder<any> = new ActionRowBuilder()
+				.addComponents(
+					new ButtonBuilder()
+						.setCustomId(`shutdown:${vmNode}:${vmId}`)
+						.setLabel(`Try to shutdown ${vmName}`)
+						.setStyle(ButtonStyle.Danger)
+				);
+				await interaction.update({ content: `//TODO show ${vmName} status and option to start, stop and reboot`, components: [startButton, rebootButton, shutdownButton] });
 				return
 			}
 		});
